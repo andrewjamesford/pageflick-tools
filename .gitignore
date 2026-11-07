@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv*/
+.build-venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.coverage
+.env
+.env.*
+connection.json
+connection-*.json
+reading-data*.json

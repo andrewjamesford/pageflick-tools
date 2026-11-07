@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+"""Mac-only PageFlick CLI and stdio MCP adapter. Python 3.9+, no packages."""
+
+import argparse
+import concurrent.futures
+import http.client
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import threading
+import uuid
+
+VERSION = "1.0.0"
+MODERN = "2026-07-28"
+LEGACY = ("2025-11-25", "2025-06-18")
+INFO = {"name": "pageflick-local", "version": VERSION}
+MAX_MESSAGE = 1024 * 1024
+MAX_RESPONSE = 16 * 1024 * 1024
+
+
+class LocalError(Exception):
+    pass
+
+
+def validate_connection(value):
+    if not isinstance(value, dict) or value.get("schemaVersion") != 1:
+        raise LocalError("Unsupported connection file. Copy new connection details from PageFlick.")
+    if value.get("host") != "127.0.0.1":
+        raise LocalError("Only the Mac's IPv4 loopback address is allowed.")
+    port = value.get("port")
+    if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+        raise LocalError("Invalid local port.")
+    if not isinstance(value.get("token"), str) or not re.fullmatch(r"[0-9a-f]{64}", value["token"]):
+        raise LocalError("Invalid access key. Pair again from PageFlick.")
+    if value.get("bundleID") not in ("nz.co.andrewford.PageFlick", "nz.co.andrewford.PageFlick.dev"):
+        raise LocalError("This connection does not identify PageFlick or PageFlick Dev.")
+    return value
+
+
+def load_connection(path):
+    path = Path(path).expanduser()
+    try:
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise LocalError("The connection must be your regular private file. Set its permissions to 600.")
+        if info.st_size > 4096:
+            raise LocalError("Connection file is too large.")
+        with path.open(encoding="utf-8") as source:
+            return validate_connection(json.load(source))
+    except (OSError, ValueError) as error:
+        raise LocalError("Could not read a private connection file. Pair from PageFlick's Local automation settings.") from error
+
+
+def pair(path, raw, replace=False):
+    try:
+        value = validate_connection(json.loads(raw))
+    except (ValueError, TypeError) as error:
+        raise LocalError("Clipboard or input does not contain PageFlick connection details.") from error
+    path = Path(path).expanduser()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.exists() and not replace:
+        raise LocalError("A connection already exists. Use pair --replace to replace it explicitly.")
+    descriptor, temporary = tempfile.mkstemp(prefix=".pageflick-pair-", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            json.dump(value, output, separators=(",", ":"))
+        if replace:
+            os.replace(temporary, path)
+        else:
+            # A hard link provides exclusive creation without overwriting a
+            # file created between the existence check and this write.
+            os.link(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+class Call:
+    def __init__(self):
+        self.cancelled = threading.Event()
+        self.lock = threading.Lock()
+        self.connection = None
+
+    def attach(self, connection):
+        with self.lock:
+            if self.cancelled.is_set():
+                connection.close()
+                raise LocalError("Request cancelled.")
+            self.connection = connection
+
+    def cancel(self):
+        self.cancelled.set()
+        with self.lock:
+            if self.connection is not None:
+                if self.connection.sock is not None:
+                    try:
+                        self.connection.sock.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                self.connection.close()
+
+
+class Client:
+    def __init__(self, connection):
+        self.config = validate_connection(connection)
+
+    def request(self, method, path, payload=None, call=None):
+        connection = http.client.HTTPConnection("127.0.0.1", self.config["port"], timeout=32)
+        if call:
+            call.attach(connection)
+        headers = {"Authorization": "Bearer " + self.config["token"], "Accept": "application/json"}
+        body = None if payload is None else json.dumps(payload).encode("utf-8")
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        try:
+            if call and call.cancelled.is_set():
+                raise LocalError("Request cancelled.")
+            connection.request(method, path, body=body, headers=headers)
+            response = connection.getresponse()
+            data = response.read(MAX_RESPONSE + 1)
+            if len(data) > MAX_RESPONSE:
+                raise LocalError("Response exceeds the local tool size limit. Export from the app instead.")
+            if 300 <= response.status < 400:
+                raise LocalError("Local API redirects are not allowed.")
+            value = json.loads(data)
+            if response.status != 200:
+                if response.status == 401:
+                    raise LocalError("Access key rejected. Pair again after restarting PageFlick or rotating its key.")
+                detail = json.dumps(value, ensure_ascii=False).replace(self.config["token"], "[redacted]")
+                raise LocalError("Local API error " + str(response.status) + ": " + detail)
+            if call and call.cancelled.is_set():
+                raise LocalError("Request cancelled.")
+            return value
+        except (OSError, http.client.HTTPException, ValueError) as error:
+            raise LocalError("PageFlick's local API is unavailable. Keep the Mac app open and pair its current connection.") from error
+        finally:
+            connection.close()
+
+    def activate(self):
+        subprocess.run(["/usr/bin/open", "-b", self.config["bundleID"]], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def tool(self, name, arguments, call=None):
+        if call and call.cancelled.is_set():
+            raise LocalError("Request cancelled.")
+        if not isinstance(arguments, dict):
+            raise ValueError("Tool arguments must be an object.")
+        allowed = {"reading_stats": {"period"}, "reading_export": set(), "library_books": set(),
+                   "open_book": {"id"}, "continue_reading": set()}
+        if name not in allowed or set(arguments) - allowed[name]:
+            raise ValueError("Unknown tool or argument.")
+        if name == "reading_stats":
+            period = arguments.get("period", "week")
+            if period not in ("today", "week", "year"):
+                raise ValueError("Period must be today, week or year.")
+            return self.request("GET", "/v1/stats?period=" + period, call=call)
+        if name == "reading_export":
+            return self.request("GET", "/v1/export", call=call)
+        if name == "library_books":
+            return {"books": self.request("GET", "/v1/books", call=call)}
+        if name == "open_book":
+            try:
+                identifier = str(uuid.UUID(arguments["id"]))
+            except (KeyError, ValueError, TypeError, AttributeError) as error:
+                raise ValueError("Provide the stable book UUID from library_books.") from error
+            self.activate()
+            return self.request("POST", "/v1/open", {"id": identifier}, call=call)
+        self.activate()
+        return self.request("POST", "/v1/continue", {}, call=call)
+
+
+def tools():
+    definitions = [
+        ("reading_stats", "Get active reading statistics in seconds for a calendar period.",
+         {"period": {"type": "string", "enum": ["today", "week", "year"]}}, [], True),
+        ("reading_export", "Export versioned library metadata and reading history JSON, excluding book text and notes.", {}, [], True),
+        ("library_books", "List stable book IDs with titles and authors only.", {}, [], True),
+        ("open_book", "Bring PageFlick forward and open a book at its saved position. No import or library mutation.",
+         {"id": {"type": "string", "format": "uuid"}}, ["id"], False),
+        ("continue_reading", "Open the uniquely most recently read book. Ambiguity returns choices rather than selecting one.", {}, [], False),
+    ]
+    return [{"name": name, "description": description,
+             "inputSchema": {"type": "object", "properties": properties, "required": required, "additionalProperties": False},
+             "annotations": {"readOnlyHint": read_only, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}}
+            for name, description, properties, required, read_only in definitions]
+
+
+class MCPServer:
+    def __init__(self, client, output=sys.stdout):
+        self.client = client
+        self.output = output
+        self.lock = threading.RLock()
+        self.pending = {}
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        self.legacy = None
+        self.initialized = False
+
+    def emit(self, message):
+        with self.lock:
+            self.output.write(json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n")
+            self.output.flush()
+
+    def error(self, identifier, code, message, data=None):
+        result = {"jsonrpc": "2.0", "error": {"code": code, "message": message}}
+        if identifier is not None:
+            result["id"] = identifier
+        if data is not None:
+            result["error"]["data"] = data
+        self.emit(result)
+
+    def result(self, identifier, value, modern):
+        if modern:
+            value = dict(value, resultType="complete", _meta={"io.modelcontextprotocol/serverInfo": INFO})
+        self.emit({"jsonrpc": "2.0", "id": identifier, "result": value})
+
+    def handle(self, request):
+        if not isinstance(request, dict) or request.get("jsonrpc") != "2.0" or not isinstance(request.get("method"), str):
+            self.error(None, -32600, "Invalid request")
+            return
+        method, identifier = request["method"], request.get("id")
+        params = request.get("params", {})
+        if not isinstance(params, dict):
+            self.error(identifier, -32602, "Params must be an object")
+            return
+        if "id" not in request:
+            if method == "notifications/initialized":
+                self.initialized = True
+            elif method == "notifications/cancelled":
+                with self.lock:
+                    call = self.pending.get(params.get("requestId"))
+                if call:
+                    call.cancel()
+            return
+        if isinstance(identifier, bool) or not isinstance(identifier, (str, int)):
+            self.error(None, -32600, "Request ID must be a string or integer")
+            return
+        if method == "initialize":
+            requested = params.get("protocolVersion")
+            self.legacy = requested if requested in LEGACY else LEGACY[0]
+            self.result(identifier, {"protocolVersion": self.legacy, "capabilities": {"tools": {"listChanged": False}}, "serverInfo": INFO}, False)
+            return
+        metadata = params.get("_meta", {})
+        modern = isinstance(metadata, dict) and "io.modelcontextprotocol/protocolVersion" in metadata
+        if modern:
+            version = metadata.get("io.modelcontextprotocol/protocolVersion")
+            if version != MODERN:
+                self.error(identifier, -32022, "Unsupported protocol version", {"supported": [MODERN], "requested": version})
+                return
+            if not isinstance(metadata.get("io.modelcontextprotocol/clientCapabilities"), dict):
+                self.error(identifier, -32602, "Missing client capabilities")
+                return
+        elif self.legacy is None or (not self.initialized and method != "ping"):
+            self.error(identifier, -32602, "Provide protocol metadata or initialize a legacy client")
+            return
+        if method == "server/discover":
+            self.result(identifier, {"supportedVersions": [MODERN, *LEGACY], "capabilities": {"tools": {"listChanged": False}}}, modern)
+        elif method == "ping":
+            self.result(identifier, {}, modern)
+        elif method == "tools/list":
+            self.result(identifier, {"tools": tools()}, modern)
+        elif method == "tools/call":
+            with self.lock:
+                if identifier in self.pending or len(self.pending) >= 8:
+                    self.error(identifier, -32600, "Duplicate request ID or too many pending requests")
+                    return
+                call = Call()
+                self.pending[identifier] = call
+            self.executor.submit(self.run_tool, identifier, params, modern, call)
+        else:
+            self.error(identifier, -32601, "Method not found")
+
+    def run_tool(self, identifier, params, modern, call):
+        try:
+            value = self.client.tool(params.get("name"), params.get("arguments", {}), call=call)
+            if not call.cancelled.is_set():
+                self.result(identifier, {"content": [{"type": "text", "text": json.dumps(value, ensure_ascii=False)}],
+                    "structuredContent": value, "isError": False}, modern)
+        except ValueError:
+            if not call.cancelled.is_set():
+                self.error(identifier, -32602, "Invalid tool or arguments")
+        except (LocalError, subprocess.SubprocessError) as error:
+            if not call.cancelled.is_set():
+                self.result(identifier, {"content": [{"type": "text", "text": str(error)}], "isError": True}, modern)
+        except Exception:
+            if not call.cancelled.is_set():
+                self.error(identifier, -32603, "Local tool failed")
+        finally:
+            with self.lock:
+                self.pending.pop(identifier, None)
+
+    def close(self):
+        with self.lock:
+            for call in self.pending.values():
+                call.cancel()
+        self.executor.shutdown(wait=True, cancel_futures=True)
+
+    def serve(self, source):
+        try:
+            while True:
+                line = source.readline(MAX_MESSAGE + 1)
+                if not line:
+                    break
+                if len(line) > MAX_MESSAGE:
+                    while line and not line.endswith(b"\n"):
+                        line = source.readline(MAX_MESSAGE + 1)
+                    self.error(None, -32700, "Message too large")
+                    continue
+                try:
+                    self.handle(json.loads(line))
+                except (ValueError, UnicodeError):
+                    self.error(None, -32700, "Invalid JSON")
+        finally:
+            self.close()
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Mac-only PageFlick local API client and MCP adapter")
+    parser.add_argument("--version", action="version", version="PageFlick local tools " + VERSION)
+    parser.add_argument("--connection", default=os.environ.get("PAGEFLICK_CONNECTION_FILE", "~/.config/pageflick/connection.json"))
+    commands = parser.add_subparsers(dest="command", required=True)
+    pairing = commands.add_parser("pair", help="Save connection details copied from the Mac app")
+    pairing.add_argument("--clipboard", action="store_true")
+    pairing.add_argument("--replace", action="store_true")
+    stats = commands.add_parser("stats", help="Query reading statistics")
+    stats.add_argument("--period", choices=("today", "week", "year"), default="week")
+    commands.add_parser("books", help="List book IDs, titles and authors")
+    opening = commands.add_parser("open", help="Open a book by its stable UUID")
+    opening.add_argument("--id", required=True)
+    commands.add_parser("continue", help="Continue an unambiguous recent book")
+    exporting = commands.add_parser("export", help="Export versioned reading-data JSON")
+    exporting.add_argument("--output", help="Create a new private output file; otherwise print JSON")
+    commands.add_parser("mcp", help="Serve MCP on stdin/stdout without opening a network listener")
+    arguments = parser.parse_args(argv)
+    if sys.platform != "darwin":
+        parser.error("PageFlick API, CLI and MCP access is supported on Mac only.")
+    try:
+        if arguments.command == "pair":
+            raw = subprocess.check_output(["/usr/bin/pbpaste"]) if arguments.clipboard else sys.stdin.buffer.read(4097)
+            if len(raw) > 4096:
+                raise LocalError("Connection details are too large.")
+            pair(arguments.connection, raw, arguments.replace)
+            print("Paired local PageFlick connection.")
+            return 0
+        client = Client(load_connection(arguments.connection))
+        if arguments.command == "mcp":
+            MCPServer(client).serve(sys.stdin.buffer)
+            return 0
+        name = {"stats": "reading_stats", "books": "library_books", "open": "open_book",
+                "continue": "continue_reading", "export": "reading_export"}[arguments.command]
+        values = {"period": arguments.period} if arguments.command == "stats" else {"id": arguments.id} if arguments.command == "open" else {}
+        value = client.tool(name, values)
+        data = json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+        if arguments.command == "export" and arguments.output:
+            descriptor = os.open(Path(arguments.output).expanduser(), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                output.write(data)
+        else:
+            print(data, end="")
+        return 0
+    except (LocalError, OSError, ValueError, subprocess.SubprocessError) as error:
+        print(str(error), file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

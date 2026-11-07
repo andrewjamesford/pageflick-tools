@@ -1,0 +1,6 @@
+include README.md
+include SECURITY.md
+include PROVENANCE.md
+include scripts/pageflick
+include scripts/test_pageflick_cli.py
+recursive-include docs *.md
