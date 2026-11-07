@@ -1,35 +1,39 @@
-# Homebrew distribution plan
+# Homebrew distribution
 
-## Package the companion, not the App Store app
-
-Keep PageFlick installed and updated through the Mac App Store. Package this Python CLI/MCP companion as a Homebrew **formula**. Homebrew can install its Python dependency and place the `pageflick` command on PATH; users do not need the app source repository.
-
-A **cask** for the graphical app would be a separate distribution decision and would require an upstream-supported downloadable app archive or installer. An App Store listing URL is not that artifact. No direct-download PageFlick app is created by this repository.
-
-## Own tap is the practical starting point
-
-A third-party tap is an ordinary Git repository containing formula files. The proposed name is `andrewjamesford/homebrew-tap`, with `Formula/pageflick-tools.rb`. It can host other tools later too.
-
-A tap is not mandatory for every Homebrew package: software accepted into Homebrew's official repositories can be installed without an upstream tap. But `homebrew/core` requires an acceptable open-source license, stable verifiable source and must not depend on proprietary software or a cask. Because this companion requires the proprietary PageFlick app, our own tap is the practical route, rather than planning around core acceptance.
-
-After a public tap and release are actually ready, the intended command would be:
+## Install the companion
 
 ```sh
 brew install andrewjamesford/tap/pageflick-tools
+pageflick --version
 ```
 
-This command is **not available yet**. Modern Homebrew also applies trust controls to third-party taps; users should review the package they install.
+The [tap repository](https://github.com/andrewjamesford/homebrew-tap) contains `Formula/pageflick-tools.rb`. It downloads a versioned source archive from the [tools releases](https://github.com/andrewjamesford/pageflick-tools/releases), verifies SHA-256, and installs the standalone script using Homebrew Python 3.15. There are no runtime PyPI dependencies.
 
-## Needed before publishing
+**Preview:** an API-enabled PageFlick build is required. Compatibility with the current public App Store 1.0 listing has not been verified; check for the local API setting before installing the companion.
 
-1. Approve repository visibility and a distribution license for the companion. Keeping the main app private is independent of choosing a license for these small tools.
-2. Verify minimum compatible App Store app version and fresh-user pairing instructions.
-3. Publish a versioned, immutable archive of the reviewed tools, with tests and documentation. Record its SHA-256.
-4. Create the tap and a macOS-only formula with description, homepage, version/archive URL, SHA-256, the chosen license, and a Homebrew Python dependency. The formula should install the helper with the Homebrew interpreter and never write or request a pairing secret during installation.
-5. Test installation from that exact archive, `--version`/`--help`, fixture-based CLI/MCP behavior, uninstall/reinstall, and applicable `brew audit`/`brew test` checks.
-6. For each release, update the formula's version, URL and checksum, then repeat the checks.
+The command installs the CLI/MCP companion only. Keep PageFlick installed through the Mac App Store and follow the README's pairing steps. Your app must expose the local API setting; the tools do not add that feature to older app builds.
 
-Private taps can be used by authorized users but are not friction-free public distribution. This initial repository creation does not create a tap, publish a release, select a public license, or enable automatic release workflows.
+## Update and remove
+
+```sh
+brew update
+brew upgrade pageflick-tools
+brew uninstall pageflick-tools
+```
+
+Uninstalling the formula does not uninstall PageFlick, alter its library or delete your private pairing file. To revoke API access, disable the local API or rotate its key in PageFlick. Review and remove any obsolete saved connection file yourself if you no longer need it.
+
+## Why a separate tap?
+
+Official `homebrew/core` inclusion is not required for a third-party tap. Core requires an acceptable open-source license, stable verifiable source and must not depend on proprietary software or a cask. This companion is MIT licensed, but it requires the separately distributed PageFlick app, so a maintained upstream tap is the practical route.
+
+A cask for the graphical app would require a supported direct-download app archive or installer. An App Store listing URL is not that artifact. The tap does not distribute the app or alter its license.
+
+## Maintenance
+
+Follow [the release procedure](RELEASING.md). For each release, update the formula URL and SHA-256, verify installation from the exact archive, and run `brew test`, style and applicable audit checks. Formula installation must never request or write pairing credentials. Formula tests use synthetic data only.
+
+Homebrew applies trust controls to third-party taps. Review the package you install; whole-tap trust is not needed merely to install this formula.
 
 ## Official references
 

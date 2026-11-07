@@ -30,4 +30,4 @@ The extracted adapter supports discovery/meta envelopes for protocol `2026-07-28
 
 ## Compatibility status
 
-The extraction and synthetic tests verify the helper, not a particular App Store release. The minimum compatible released app version and live installed-app acceptance remain to be recorded before public distribution.
+This is a preview for API-enabled PageFlick builds. The public App Store listing checked on 2026-11-07 reports app version 1.0, released 2026-10-19; compatibility with that build has not been verified. The local API entered the inspected source on 2026-11-04, but source commit dates alone do not establish the content of a distributed app. Check for the local API setting. The first verified compatible public App Store version and live app acceptance remain to be recorded. Synthetic tests verify the helper, not a particular App Store release.

@@ -10,4 +10,4 @@ CLI output and exports contain reading information. An MCP client can receive th
 
 Tests must use synthetic data and temporary files. Do not read or copy the user's real connection file, database, EPUBs, exports, notes or credentials for packaging tests.
 
-Before public distribution, establish a private security-reporting channel and document it here. Never report a real token or private reading data in a public issue.
+For sensitive security reports, use the developer contact published on the [PageFlick support page](https://getpageflick.com/support/). Never report a real token or private reading data in a public issue. Include only a synthetic reproduction and the tools version.

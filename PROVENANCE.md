@@ -13,4 +13,4 @@ Those source files matched the recorded HEAD at extraction. The source checkout 
 
 Documentation was rewritten for independent installation, drawing on the source repository's `docs/Local-automation.md`. Packaging metadata and the distribution checklist are new.
 
-No repository license was present in the inspected source checkout. No new open-source license or public redistribution grant is selected here. Keep this repository private until its owner approves visibility and licensing. The existing `1.0.0` helper version was preserved; no release tag or release has been created.
+No repository license was present in the inspected source checkout. For the standalone companion release, the owner approved the [MIT license](LICENSE). This license covers the files in this tools repository; it does not change the separate PageFlick application's license or publish its source. The existing `1.0.0` helper version was preserved for the first standalone release.

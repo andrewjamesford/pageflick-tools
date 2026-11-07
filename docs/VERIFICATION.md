@@ -1,6 +1,6 @@
 # Initial extraction verification
 
-Verified on the owner's Apple Silicon Mac on 2026-11-07.
+Historical extraction checks on the owner's Apple Silicon Mac on 2026-11-07, before publication. Later release and Homebrew checks are recorded in the release notes and tap documentation.
 
 ## Passed
 
