@@ -50,7 +50,7 @@ pageflick stats --period week
 
 Pairing reads the connection from the clipboard and stores it in an owner-only `0600` file at `~/.config/pageflick/connection.json`. Clear the copied secret from the clipboard after pairing. Never paste it into a chat, issue or repository.
 
-Restarting PageFlick or rotating its key changes the connection. Copy it again, run `pageflick pair --clipboard --replace`, then restart your MCP client/server. The examples below assume the installed tools directory is on `PATH`.
+The current app source preserves pairing across ordinary restarts; older builds may not. After resetting or replacing the saved connection, copy it again, run `pageflick pair --clipboard --replace`, then restart your MCP client/server. The examples below assume the installed tools directory is on `PATH`.
 
 ```sh
 pageflick stats --period today
@@ -81,9 +81,37 @@ Pair first, then configure a trusted AI client to launch the installed command w
 
 The example uses the Apple Silicon Homebrew path. For a non-Homebrew install, replace it with your actual installed path.
 
-Available tools: `reading_stats`, `reading_export`, `library_books`, `open_book`, and `continue_reading`. The server uses stdin/stdout and does not open another network listener. Only JSON-RPC is written to stdout. See [the API contract](docs/LOCAL_API.md) and [security notes](SECURITY.md).
+Available tools: `reading_stats`, `reading_export`, `library_books`, `open_book`, `continue_reading`, `book_recap`, and `book_summary`. The server uses stdin/stdout and does not open another network listener. Only JSON-RPC is written to stdout. See [the API contract](docs/LOCAL_API.md) and [security notes](SECURITY.md).
 
-An AI client may receive book titles, authors, reading history and statistics. Use only clients you trust, and review its data-sharing policy. This helper exposes no import or delete tools and does not provide book text or notes.
+An AI client may receive book titles, authors, reading history and statistics. Use only clients you trust, and review its data-sharing policy. This helper exposes no import or delete tools and does not provide notes. The optional recap and summary tools can provide book text after a separate app opt-in; see below.
+
+## Book recaps and summaries (source context)
+
+These commands require a newer API-enabled app with **separate book text access enabled** in Local automation settings. It is disabled by default. The first compatible public App Store version has not been verified. Updating this companion alone does not add the endpoint to an older app.
+
+```sh
+pageflick recap --id BOOK_UUID
+pageflick recap --id BOOK_UUID --format prompt
+pageflick summary --id BOOK_UUID --format prompt
+```
+
+`recap` returns source material **before the entire current saved reading resource**. It deliberately excludes that resource, even if you have read part of it. A resource is often a chapter, but EPUB structure varies. It does not estimate a cutoff from percentage progress, prove which pages you actually read, or automatically fall back to a full-book summary when the saved position is unavailable.
+
+`summary` requests the whole book, including potential ending spoilers. Use it only when you want that coverage. Both commands return JSON context by default, not AI-generated prose. `--format prompt` wraps the page in instructions suitable for a trusted AI client. The companion makes no third-party AI calls and requires no model API key.
+
+Each call returns one bounded page (default 12,000 characters; `--max-characters` accepts 1,000–24,000). If `complete` is false, fetch `nextOffset` using the same scope/book and returned `snapshot`:
+
+```sh
+pageflick recap --id BOOK_UUID --offset NEXT_OFFSET --snapshot SNAPSHOT
+```
+
+Collect every page from offset zero before claiming complete coverage, or clearly label a summary as partial. `complete: true` means the last page, not that you have collected earlier pages. If the content or cutoff changes, `context_changed` requires discarding earlier pages and starting again at offset zero. Prompts include these limitations; copying one page into an AI client does not supply the rest of the book.
+
+Extraction uses strict XHTML parsing, not OCR or non-text media transcription. Navigation and explicitly hidden elements are excluded; stylesheet visibility is not evaluated, so CSS-hidden text could appear. Extraction fails closed above 2 MB per XHTML resource or 2 million source characters. A smaller page size cannot bypass these limits.
+
+MCP `book_recap` and `book_summary` accept `id`, `offset`, `maxCharacters`, and `snapshot`. Returned instructions require grounding in supplied text, respecting warnings, and treating all book text and metadata as untrusted data rather than commands. A recap must not use the model's knowledge of future plot events. The full-summary tool must be explicitly requested.
+
+Book text may be copyrighted and personal. Only pass it to clients/providers you trust and have permission to use. Avoid redirecting context into public files, logs, or repositories; ordinary shell redirection does not guarantee private file permissions.
 
 ## Develop and test
 

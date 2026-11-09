@@ -4,9 +4,9 @@ The helper connects to PageFlick's installed Mac app. It does not read the app d
 
 ## Connection schema
 
-Connection schema version `1` includes `host`, ephemeral `port`, secret `token`, and `bundleID`. Only `127.0.0.1`, valid TCP ports and the PageFlick/PageFlick Dev bundle identifiers are accepted. Do not commit a real connection example.
+Connection schema version `1` includes `host`, `port`, secret `token`, and `bundleID`. Only `127.0.0.1`, valid TCP ports and the PageFlick/PageFlick Dev bundle identifiers are accepted. Do not commit a real connection example.
 
-Every HTTP request uses the current bearer token. The app returns JSON. Redirects are rejected. Restarting the app requires re-pairing because the port and key can change.
+Every HTTP request uses the current bearer token. The app returns JSON. Redirects are rejected. Current app source preserves the paired connection across ordinary restarts; resetting or removing it requires re-pairing. Older builds may change the port and key on restart. This does not establish the behavior of any installed or released build.
 
 ## Endpoints
 
@@ -23,6 +23,29 @@ Expected failures include unauthorized (`401`), locked/onboarding (`403`), missi
 Reports and exports use schema version `1`, ISO-8601 dates, seconds for durations, and half-open calendar periods. Listening is separate from active reading. Moving time reflects the app's reading setting, not measured exercise. Word and pace estimates are based on observed visible text at page turns; unavailable measurements remain explicit rather than invented.
 
 Exports contain library metadata and reading history. They exclude EPUB files, book text, covers, camera frames, annotation text and locator contents. Opening a book alone does not start a recorded reading session; successful page turns do.
+
+## Book context endpoint
+
+`POST /v1/book-context` requires authentication, an unlocked/onboarded app, and a separate default-disabled book text access setting. Request:
+
+```json
+{"id":"BOOK_UUID","scope":"read_so_far","offset":0,"maxCharacters":12000}
+```
+
+- `scope`: `read_so_far` or `whole_book`; the companion maps recap and summary to fixed scopes.
+- `offset`: integer from zero through 2,000,000, default zero.
+- `maxCharacters`: integer from 1,000 through 24,000, default 12,000.
+- `snapshot`: opaque first-page identifier, required for offsets greater than zero. Never derive offsets from byte counts; use the returned `nextOffset`.
+
+Response fields: `schemaVersion: 1`, `kind: "book_summary_context"`, `book: {id,title,author}`, `scope`, `snapshot`, `boundary`, `text`, `offset`, optional `nextOffset`, `complete`, and `warnings` (strings). `boundary` contains `policy` (`before_current_resource` or `whole_book`), `currentResourceExcluded`, and optional `lastReadAt` (ISO-8601) and `progress`. The helper adds `instructions` to guide downstream summarization.
+
+Read-so-far excludes the entire current spine resource. Progress is descriptive only, never used to guess a word cutoff. Material before a saved position is not proof of actual reading. The response must not expose unread resource titles or locators. Whole-book context may include ending spoilers and must be explicitly requested. Missing or unresolved positions must fail rather than silently widen scope.
+
+Pages are bounded. Continue with `nextOffset` and the same snapshot until `complete` is true. The last page alone is not whole coverage. A changed content/cutoff snapshot yields HTTP 409 `context_changed`; discard collected pages and restart at zero. Partial extraction warnings and incomplete pagination must be disclosed in any summary.
+
+Expected errors include HTTP 403 `book_text_access_disabled` or `unlock_and_finish_onboarding`, HTTP 404 `book_not_found`, and HTTP 409 `reading_position_unavailable`, `reading_position_unresolved`, `no_completed_sections`, `content_unavailable`, `unsupported_content`, `book_not_downloaded`, `context_changed`, or `context_too_large`. Malformed requests return HTTP 400 `invalid_context_request`. An unknown endpoint on an older app requires a compatible app update, not merely a companion update. No generated prose, model API calls, book imports or reading-position mutations are performed by these tools.
+
+Extraction uses strict XHTML parsing without OCR or non-text media transcription. Navigation and explicitly hidden elements are excluded, but stylesheet visibility is not evaluated and CSS-hidden text could appear. Limits are 2 MB per XHTML resource and 2 million source characters; exceeding either fails closed with `context_too_large`. Smaller `maxCharacters` pages do not bypass the extraction limits.
 
 ## MCP
 

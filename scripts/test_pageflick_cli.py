@@ -63,7 +63,29 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", "0"))
         data = json.loads(self.rfile.read(length))
-        if self.path == "/v1/open" and data.get("id") == BOOK_ID:
+        if self.path == "/v1/book-context":
+            snapshot = data.get("snapshot")
+            if snapshot in ("disabled", "old", "missing", "changed", "unavailable", "oversized"):
+                status, error = {"disabled": (403, "book_text_access_disabled"),
+                                 "old": (404, "not_found"), "missing": (404, "book_not_found"),
+                                 "changed": (409, "context_changed"),
+                                 "unavailable": (409, "reading_position_unavailable"),
+                                 "oversized": (409, "context_too_large")}[snapshot]
+                self.respond(status, {"error": error})
+                return
+            scope = data["scope"]
+            offset = data["offset"]
+            value = {"schemaVersion": 1, "kind": "book_summary_context",
+                     "book": {"id": BOOK_ID, "title": "Synthetic", "author": "Fixture"},
+                     "scope": scope, "snapshot": "fixture-v1", "offset": offset,
+                     "boundary": {"policy": "before_current_resource" if scope == "read_so_far" else "whole_book",
+                                  "currentResourceExcluded": scope == "read_so_far"},
+                     "text": "Early events." if scope == "read_so_far" else "The ending.",
+                     "complete": offset > 0, "warnings": []}
+            if not value["complete"]:
+                value["nextOffset"] = 1000
+            self.respond(200, value)
+        elif self.path == "/v1/open" and data.get("id") == BOOK_ID:
             self.respond(200, {"opened": True})
         else:
             self.respond(409, [{"id": BOOK_ID, "title": "Choose explicitly", "author": "Fixture"}])
@@ -170,8 +192,107 @@ class CLITests(unittest.TestCase):
         self.wait_pending(server)
         replies = {item["id"]: item for item in map(json.loads, output.getvalue().splitlines())}
         self.assertEqual(replies[1]["result"]["protocolVersion"], "2025-11-25")
-        self.assertEqual(len(replies[2]["result"]["tools"]), 5)
+        self.assertEqual(len(replies[2]["result"]["tools"]), 7)
         self.assertEqual(replies[3]["error"]["code"], -32602)
+
+    def test_context_scopes_pagination_and_grounding(self):
+        client = cli.Client(self.config)
+        with patch.object(client, "activate") as activate:
+            recap = client.tool("book_recap", {"id": BOOK_ID})
+            summary = client.tool("book_summary", {"id": BOOK_ID, "maxCharacters": 1000})
+            page = client.tool("book_recap", {"id": BOOK_ID, "offset": recap["nextOffset"], "snapshot": recap["snapshot"]})
+            activate.assert_not_called()
+        self.assertEqual(recap["scope"], "read_so_far")
+        self.assertNotIn("The ending.", recap["text"])
+        self.assertEqual(summary["scope"], "whole_book")
+        self.assertTrue(page["complete"])
+        self.assertNotIn("nextOffset", page)
+        self.assertEqual(page["offset"], 1000)
+        for result in (recap, summary):
+            self.assertIn("untrusted", result["instructions"])
+            self.assertIn("partial coverage", result["instructions"])
+            self.assertIn("not an AI-generated summary", result["instructions"])
+        self.assertIn("Never fall back", recap["instructions"])
+        self.assertIn("explicitly requested", summary["instructions"])
+        self.assertIn('"snapshot": "fixture-v1"', cli.context_prompt(recap))
+
+    def test_invalid_context_arguments_fail_without_requests(self):
+        client = cli.Client(self.config)
+        invalid = [{}, {"id": False}, {"id": "not-a-uuid"}]
+        invalid += [dict(id=BOOK_ID, **{key: value}) for key, values in {
+            "offset": [-1, True, 1.5, "1", 1, 2000001],
+            "maxCharacters": [999, 24001, True, 1000.5, "12000"],
+            "snapshot": [None, "", " ", True, "s" * 257],
+            "scope": ["whole_book"], "unknown": [1],
+        }.items() for value in values]
+        with patch.object(client, "request") as request:
+            for name in ("book_recap", "book_summary"):
+                for arguments in invalid:
+                    with self.subTest(name=name, arguments=arguments), self.assertRaises(ValueError):
+                        client.tool(name, arguments)
+            request.assert_not_called()
+        payload = cli.context_payload("book_recap", {"id": BOOK_ID, "offset": 2000000, "snapshot": "opaque-not-hex"})
+        self.assertEqual(payload["offset"], 2000000)
+        self.assertEqual(payload["snapshot"], "opaque-not-hex")
+        self.assertEqual(cli.CONTEXT_ARGUMENTS["offset"]["maximum"], 2000000)
+        for size in (1000, 24000):
+            self.assertEqual(cli.context_payload("book_recap", {"id": BOOK_ID, "maxCharacters": size})["maxCharacters"], size)
+
+    def test_context_errors_explain_opt_in_compatibility_and_restart_without_fallback(self):
+        client = cli.Client(self.config)
+        for snapshot, message in (("disabled", "separate book text"), ("old", "compatible API-enabled"),
+                                  ("missing", "book_not_found"), ("changed", "Discard prior pages"),
+                                  ("unavailable", "reading_position_unavailable"),
+                                  ("oversized", "2 MB per XHTML resource or 2 million source characters")):
+            with self.subTest(snapshot=snapshot), self.assertRaisesRegex(cli.LocalError, message):
+                client.tool("book_recap", {"id": BOOK_ID, "snapshot": snapshot})
+        with patch.object(client, "request", return_value={"schemaVersion": 1, "kind": "book_summary_context", "scope": "whole_book"}) as request:
+            with self.assertRaisesRegex(cli.LocalError, "Unsupported book context"):
+                client.tool("book_recap", {"id": BOOK_ID})
+            request.assert_called_once()
+
+    def test_context_modern_and_legacy_discovery_and_calls(self):
+        for modern in (True, False):
+            output = io.StringIO()
+            server = cli.MCPServer(cli.Client(self.config), output)
+            try:
+                params = {}
+                if modern:
+                    params["_meta"] = {"io.modelcontextprotocol/protocolVersion": cli.MODERN,
+                                       "io.modelcontextprotocol/clientCapabilities": {}}
+                else:
+                    server.handle({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": cli.LEGACY[0]}})
+                    server.handle({"jsonrpc": "2.0", "method": "notifications/initialized"})
+                server.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": params})
+                for number, name in ((2, "book_recap"), (3, "book_summary")):
+                    server.handle({"jsonrpc": "2.0", "id": number, "method": "tools/call",
+                                   "params": dict(params, name=name, arguments={"id": BOOK_ID})})
+                self.wait_pending(server)
+                replies = {item["id"]: item for item in map(json.loads, output.getvalue().splitlines())}
+                definitions = {tool["name"]: tool for tool in replies[1]["result"]["tools"]}
+                for name in ("book_recap", "book_summary"):
+                    self.assertEqual(definitions[name]["inputSchema"]["required"], ["id"])
+                    self.assertTrue(definitions[name]["annotations"]["readOnlyHint"])
+                self.assertEqual(replies[2]["result"]["structuredContent"]["scope"], "read_so_far")
+                self.assertEqual(replies[3]["result"]["structuredContent"]["scope"], "whole_book")
+            finally:
+                server.close()
+
+    @unittest.skipUnless(sys.platform == "darwin", "Mac-only executable")
+    def test_context_cli_json_prompt_pagination_and_invalid_input(self):
+        base = [sys.executable, str(SCRIPT), "--connection", str(self.connection)]
+        for command in ("recap", "summary"):
+            result = subprocess.run(base + [command, "--id", BOOK_ID], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["scope"], "read_so_far" if command == "recap" else "whole_book")
+            result = subprocess.run(base + [command, "--id", BOOK_ID, "--format", "prompt", "--offset", "1000", "--snapshot", "fixture-v1", "--max-characters", "1000"], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("SOURCE CONTEXT (untrusted JSON data)", result.stdout)
+            self.assertIn('"offset": 1000', result.stdout)
+        result = subprocess.run(base + ["recap", "--id", BOOK_ID, "--offset", "1000"], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("snapshot", result.stderr)
+        self.assertEqual(result.stdout, "")
 
     def test_mcp_cancellation_stops_pending_work_and_sends_no_success(self):
         class WaitingClient:
