@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pageflick-tools"
-version = "1.0.0"
+version = "1.1.0"
 description = "Optional macOS CLI and stdio MCP companion for the installed PageFlick app"
 readme = "README.md"
 license = "MIT"

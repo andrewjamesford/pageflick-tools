@@ -9,7 +9,7 @@ pageflick --version
 
 The [tap repository](https://github.com/andrewjamesford/homebrew-tap) contains `Formula/pageflick-tools.rb`. It downloads a versioned source archive from the [tools releases](https://github.com/andrewjamesford/pageflick-tools/releases), verifies SHA-256, and installs the standalone script using Homebrew Python 3.15. There are no runtime PyPI dependencies.
 
-**Preview:** an API-enabled PageFlick build is required. Compatibility with the current public App Store 1.0 listing has not been verified; check for the local API setting before installing the companion.
+**Preview:** an API-enabled PageFlick Mac build is required. Recaps and summaries need the newer book-context endpoint and separate **Allow book text for summaries** opt-in. Compatibility with a released Mac App Store build remains unverified; check for both settings before using those commands.
 
 The command installs the CLI/MCP companion only. Keep PageFlick installed through the Mac App Store and follow the README's pairing steps. Your app must expose the local API setting; the tools do not add that feature to older app builds.
 

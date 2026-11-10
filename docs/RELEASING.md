@@ -13,7 +13,7 @@
 Run from the repository root after the release commit exists, using the intended version and immutable commit:
 
 ```sh
-VERSION=1.0.0
+VERSION=1.1.0
 COMMIT=$(git rev-parse HEAD)
 test -z "$(git status --porcelain)"
 test -f LICENSE

@@ -2,14 +2,14 @@
 
 Optional command-line tools and a local stdio MCP server for the **installed PageFlick Mac app**. The app stays installed from the Mac App Store; this companion connects to its local API. It does not build, install, modify or replace the app, and it does not need the `pageflick-ios` source checkout.
 
-**Preview version:** 1.0.0. These optional tools are [MIT licensed](LICENSE). The PageFlick app is distributed separately and its license is unchanged. See [provenance](PROVENANCE.md).
+**Preview version:** 1.1.0. These optional tools are [MIT licensed](LICENSE). The PageFlick app is distributed separately and its license is unchanged. See [provenance](PROVENANCE.md).
 
-**Compatibility preview:** this companion requires an API-enabled PageFlick build with the setting described below. The public App Store listing checked on 2026-11-07 reports version 1.0; compatibility with that build has not been verified. Check for the local API setting before installing these tools. The companion does not upgrade the app or add the API. The first verified compatible public App Store version remains to be confirmed.
+**Compatibility preview:** this companion requires an API-enabled PageFlick Mac build with the setting described below. Recaps and summaries also require the newer book-context endpoint and a separate book text opt-in. The native API implementation has been tested with PageFlick 2.0 development builds; compatibility with a released Mac App Store build remains unverified. The companion does not upgrade the app or add these settings to older builds.
 
 ## Requirements
 
 - An Apple Silicon Mac running macOS 27 or newer, matching the current PageFlick app requirements. Python 3.9 or newer is required for a manual install; Homebrew supplies Python. Runtime code uses only the Python standard library.
-- An installed PageFlick version that exposes **Settings → Automation → Local API, CLI and MCP**. Older settings may call this **Local automation**. The minimum App Store version still needs to be verified before a public release.
+- An installed PageFlick version that exposes **Settings → Automation → Local API, CLI and MCP**. Older settings may call this **Local automation**. The minimum compatible Mac App Store version remains to be verified.
 - Keep PageFlick open with its local API enabled. A source checkout is not required after the tools are installed.
 
 ## Install with Homebrew
@@ -122,7 +122,11 @@ python3 scripts/pageflick --help
 python3 scripts/pageflick --version
 ```
 
+Set `PAGEFLICK_TEST_SCRIPT` to the absolute path of an installed `pageflick` command to run the same suite against that copy.
+
 Tests use synthetic loopback fixtures and temporary connection files. They do not read the real PageFlick library, pair the installed app or change client settings. On non-Mac hosts the real executable integration test is skipped; macOS is the supported runtime.
+
+See [the 1.1.0 release notes](docs/RELEASE-1.1.0.md) for changes and verification limits.
 
 ## Distribution checklist
 

@@ -14,7 +14,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-SCRIPT = Path(__file__).with_name("pageflick")
+SCRIPT = Path(os.environ.get("PAGEFLICK_TEST_SCRIPT", Path(__file__).with_name("pageflick")))
 loader = importlib.machinery.SourceFileLoader("pageflick_cli", str(SCRIPT))
 spec = importlib.util.spec_from_loader(loader.name, loader)
 cli = importlib.util.module_from_spec(spec)
